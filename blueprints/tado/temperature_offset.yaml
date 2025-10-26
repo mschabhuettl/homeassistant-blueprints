@@ -1,0 +1,104 @@
+blueprint:
+  name: "Update Entity Offset with Switch 🔥🌡️"
+  description: Update the offset attribute of an entity based on another sensor's
+    state, with an on/off control
+  domain: automation
+  input:
+    sensor_to_monitor:
+      name: Zigbee Sensor to Monitor
+      description: The sensor whose state will be used to update the "offset" attribute
+      selector:
+        entity:
+          domain:
+            - sensor
+          device_class:
+            - temperature
+          multiple: false
+    entity_to_update:
+      name: Tado Entity to Update
+      description: The climate entity whose "offset" attribute will be updated
+      selector:
+        entity:
+          domain:
+            - climate
+          multiple: false
+    threshold:
+      name: Threshold
+      description: The maximum difference between the two sensors to trigger the automation
+      selector:
+        number:
+          min: 0.0
+          max: 10.0
+          step: 0.5
+          unit_of_measurement: °C
+          mode: slider
+    time_interval_minutes:
+      name: Time Interval (minutes)
+      description: The interval in minutes for the calibration to trigger
+      default: 15
+      selector:
+        number:
+          min: 10
+          max: 60
+          unit_of_measurement: minutes
+    enable_switch:
+      name: Enable Automation only when Heating
+      description: Enable or disable the automation only when entity is on HEAT status
+      default: true
+      selector:
+        boolean: {}
+  source_url: https://github.com/matthiasschabhuettl/homeassistant-blueprints/blob/main/blueprints/tado/temperature_offset.yaml
+variables:
+  entity_to_update: !input entity_to_update
+  sensor_to_monitor: !input sensor_to_monitor
+  current_time: '{{ now().strftime(''%H:%M'') }}'
+  friendly_name: '{{ state_attr(entity_to_update, ''friendly_name'') }}'
+  interval: !input time_interval_minutes
+  enable_switch: !input enable_switch
+trigger:
+  - platform: time_pattern
+    minutes: "*"
+condition:
+  - condition: template
+    value_template: >
+      {{ (now().minute % interval | int) == 0 }}
+  - condition: or
+    conditions:
+      - condition: template
+        value_template: '{{ enable_switch == false }}'
+      - condition: and
+        conditions:
+          - condition: template
+            value_template: '{{ enable_switch == true }}'
+          - condition: state
+            entity_id: !input entity_to_update
+            attribute: hvac_action
+            state: heating
+
+action:
+  - if:
+      - condition: numeric_state
+        entity_id:
+          - !input sensor_to_monitor
+          - !input entity_to_update
+        value_template: >
+          {{ (states(sensor_to_monitor)|float - state_attr(entity_to_update,
+          'current_temperature')|float)|abs }}
+        above: !input threshold
+    then:
+      - service: tado.set_climate_temperature_offset
+        data:
+          offset: >
+            {{
+              ( state_attr(entity_to_update, 'offset_celsius')|float if
+              state_attr(entity_to_update, 'offset_celsius') is not none else 0 ) +
+              ((states(sensor_to_monitor)|float -
+              state_attr(entity_to_update, 'current_temperature')|float) if
+              states(sensor_to_monitor) is not none and
+              state_attr(entity_to_update, 'current_temperature') is not none else 0
+              ) | round(1)
+            }}
+        target:
+          entity_id: !input entity_to_update
+trace:
+  stored_traces: 120
