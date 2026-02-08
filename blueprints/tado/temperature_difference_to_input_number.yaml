@@ -1,0 +1,128 @@
+blueprint:
+  name: "Store Temperature Difference to Input Number 🔥🌡️"
+  description: >
+    Calculates the temperature difference between a reference temperature sensor
+    and a climate entity's current_temperature, then stores the result in an
+    input_number. Optionally only runs when heating is active.
+  domain: automation
+  input:
+    sensor_to_monitor:
+      name: Reference Sensor (temperature)
+      description: Temperature sensor used as reference
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+          multiple: false
+
+    climate_entity:
+      name: Climate Entity
+      description: Climate entity whose current_temperature is used for comparison
+      selector:
+        entity:
+          domain: climate
+          multiple: false
+
+    offset_output:
+      name: Input Number Target
+      description: input_number that will be set to the calculated temperature difference
+      selector:
+        entity:
+          domain: input_number
+          multiple: false
+
+    time_interval_minutes:
+      name: Time Interval (minutes)
+      description: How often to compute/store the difference
+      default: 15
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: "minutes"
+
+    threshold:
+      name: Minimum absolute difference (optional)
+      description: Only write if |difference| >= threshold (set 0 to always write)
+      default: 0.0
+      selector:
+        number:
+          min: 0.0
+          max: 10.0
+          step: 0.1
+          unit_of_measurement: "°C"
+          mode: slider
+
+    only_when_heating:
+      name: Only when heating
+      description: If enabled, only runs when hvac_action == heating
+      default: false
+      selector:
+        boolean: {}
+
+  source_url: https://github.com/matthiasschabhuettl/homeassistant-blueprints/blob/main/blueprints/tado/temperature_difference_to_input_number.yaml
+
+variables:
+  sensor_to_monitor: !input sensor_to_monitor
+  climate_entity: !input climate_entity
+  interval: !input time_interval_minutes
+  threshold: !input threshold
+  only_when_heating: !input only_when_heating
+  offset_output: !input offset_output
+  climate_name: "{{ state_attr(climate_entity, 'friendly_name') or climate_entity }}"
+
+trigger:
+  - platform: time_pattern
+    minutes: "*"
+
+condition:
+  # run only on the chosen interval
+  - condition: template
+    value_template: >
+      {{ (now().minute % (interval | int(15))) == 0 }}
+
+  # optionally require heating action
+  - condition: or
+    conditions:
+      - condition: template
+        value_template: "{{ only_when_heating == false }}"
+      - condition: and
+        conditions:
+          - condition: template
+            value_template: "{{ only_when_heating == true }}"
+          - condition: state
+            entity_id: !input climate_entity
+            attribute: hvac_action
+            state: heating
+
+action:
+  - variables:
+      difference_c: >
+        {{
+          (
+            (states(sensor_to_monitor) | float(none))
+            - (state_attr(climate_entity, 'current_temperature') | float(none))
+          ) | round(2)
+        }}
+
+  # guard: if either value is unavailable -> don't write
+  - condition: template
+    value_template: "{{ difference_c is not none }}"
+
+  # optional threshold
+  - condition: template
+    value_template: "{{ (difference_c | abs) >= (threshold | float(0)) }}"
+
+  - service: input_number.set_value
+    data:
+      entity_id: !input offset_output
+      value: "{{ difference_c }}"
+
+  - service: logbook.log
+    data:
+      name: "Temperature Difference Stored"
+      message: "Stored diff for {{ climate_name }}: {{ difference_c }} °C"
+      entity_id: !input climate_entity
+
+trace:
+  stored_traces: 120
